@@ -1,0 +1,59 @@
+# Validates the casks in this tap on every push and pull request.
+#
+# Deliberately small. `brew tap-new` scaffolds three workflows aimed at
+# formulae — a daily autobump and a bottle publisher, both of which need write
+# access to this repository — and this tap has no formulae and never will. A
+# workflow that can write to a tap is the thing worth attacking here: change a
+# URL and a checksum and everyone who runs `brew install` gets whatever you
+# like. So there is one workflow, it reads, and nothing in this repository can
+# write to itself.
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Read-only for every job in the file. Anything needing more should be a
+# deliberate, reviewed change rather than an inherited default.
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash -xeuo pipefail {0}
+
+jobs:
+  test:
+    # macOS, because a cask that gates on macOS 26 and arm64 cannot be
+    # meaningfully audited from Linux.
+    runs-on: macos-26
+    steps:
+      - name: Set up Homebrew
+        id: set-up-homebrew
+        uses: Homebrew/actions/setup-homebrew@a657b8b0cd35d0f65cce41fce9b24cf054b49869 # 2026.08.24.1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Cache Homebrew Bundler RubyGems
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.set-up-homebrew.outputs.gems-path }}
+          key: macos-26-rubygems-${{ steps.set-up-homebrew.outputs.gems-hash }}
+          restore-keys: macos-26-rubygems-
+
+      # Style and syntax across the whole tap.
+      - run: brew test-bot --only-tap-syntax
+
+      # And the real check: that every cask's URL resolves and its checksum
+      # still matches what is written down. This is what catches an upstream
+      # release being re-cut under a tag, which would otherwise only surface as
+      # a failed install on someone else's machine.
+      - name: Audit casks against their live downloads
+        env:
+          HOMEBREW_GITHUB_API_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          for cask in Casks/*.rb; do
+            name="$(basename "$cask" .rb)"
+            brew audit --cask --online "alanwtom/tap/${name}"
+          done
